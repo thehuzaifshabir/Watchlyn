@@ -9,7 +9,7 @@ export interface UserProfile {
   email: string;
   avatar: string;
   bio?: string;
-  passwordHash: string;
+  passwordHash?: string;
   createdAt: number;
   settings?: {
     defaultServer?: string;

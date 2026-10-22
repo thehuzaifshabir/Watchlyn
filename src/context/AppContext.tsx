@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   ContinueWatchingItem,
   UserCustomList,
@@ -7,18 +9,10 @@ import {
   CommentItem,
 } from '../types';
 import {
-  loadStoredLists,
-  saveStoredLists,
-  loadContinueWatching,
-  saveContinueWatchingList,
-  loadReactions,
-  saveReactions,
-  loadComments,
-  saveComments,
-  serializeBackup,
-  validateAndParseBackup,
   DEFAULT_LISTS,
   STORAGE_KEYS,
+  serializeBackup,
+  validateAndParseBackup,
 } from '../utils/storage';
 import { useAuth } from './AuthContext';
 import { AUTH_STORAGE_KEYS } from '../utils/auth';
@@ -34,8 +28,9 @@ interface AppContextType {
   navigate: (path: string, options?: { replace?: boolean }) => void;
   // Continue Watching
   continueWatching: ContinueWatchingItem[];
-  saveProgress: (item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>) => void;
-  saveWatchProgress: (item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>) => void;
+  saveProgress: (item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>, immediate?: boolean) => void;
+  saveWatchProgress: (item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>, immediate?: boolean) => void;
+  flushWatchProgress: () => void;
   getSavedProgress: (tmdbId: number, mediaType: 'movie' | 'tv', season?: number, episode?: number) => ContinueWatchingItem | undefined;
   removeProgress: (tmdbId: number, mediaType: 'movie' | 'tv') => void;
   clearAllHistory: () => void;
@@ -82,7 +77,7 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 function parsePath(fullPath: string): RouteState {
-  const [pathname = '/', search = ''] = fullPath.split('?');
+  const [pathname, search] = fullPath.split('?');
   const params: Record<string, string> = {};
 
   const movieMatch = pathname.match(/^\/movie\/(\d+)/);
@@ -131,30 +126,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activePersonId, setActivePersonId] = useState<number | null>(null);
   const [addToListTarget, setAddToListTarget] = useState<CustomListItem | null>(null);
 
-  // Load user or guest data whenever userId changes
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
+  // Throttled Firestore Write References for Video Progress
+  const lastFirestoreSyncTimeRef = useRef<number>(0);
+  const pendingHistoryRef = useRef<ContinueWatchingItem[] | null>(null);
+  const throttleTimeoutRef = useRef<any>(null);
+  const isMergingRef = useRef<boolean>(false);
 
-    try {
-      const listsKey = getUserKey(STORAGE_KEYS.CUSTOM_LISTS, userId);
-      const rawLists = localStorage.getItem(listsKey);
-      setLists(rawLists ? JSON.parse(rawLists) : DEFAULT_LISTS);
-
-      const historyKey = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
-      const rawHistory = localStorage.getItem(historyKey);
-      setContinueWatching(rawHistory ? JSON.parse(rawHistory) : []);
-
-      const reactionsKey = getUserKey(STORAGE_KEYS.REACTIONS, userId);
-      const rawReactions = localStorage.getItem(reactionsKey);
-      setReactions(rawReactions ? JSON.parse(rawReactions) : {});
-
-      const commentsKey = getUserKey(STORAGE_KEYS.COMMENTS, userId);
-      const rawComments = localStorage.getItem(commentsKey);
-      setComments(rawComments ? JSON.parse(rawComments) : {});
-    } catch (err) {
-      console.warn('Failed loading user storage:', err);
-    }
-  }, [userId]);
+  // Toast Helper
+  const showToast = useCallback((message: string, type: 'info' | 'success' | 'error' = 'info') => {
+    setToast({ message, type });
+  }, []);
 
   // Sync browser back/forward buttons & handle /lists redirect
   useEffect(() => {
@@ -175,97 +156,270 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const navigate = useCallback((path: string, options?: { replace?: boolean }) => {
     if (typeof window !== 'undefined') {
       let targetPath = path;
-      // Auto-redirect /lists to /account?tab=lists
       if (targetPath === '/lists' || targetPath.startsWith('/lists?')) {
         targetPath = targetPath.replace('/lists', '/account?tab=lists');
       }
-
       if (options?.replace) {
         window.history.replaceState(null, '', targetPath);
       } else {
         window.history.pushState(null, '', targetPath);
       }
       setRoute(parsePath(targetPath));
-      window.scrollTo({ top: 0, behavior: 'instant' });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   }, []);
 
-  const showToast = useCallback((message: string, type: 'info' | 'success' | 'error' = 'info') => {
-    setToast({ message, type });
-  }, []);
-
+  // 1. Initial Local Load & Firestore Snapshot Sync
   useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => {
-      setToast(null);
-    }, 3200);
-    return () => clearTimeout(timer);
-  }, [toast]);
-
-  // Persist helpers using active user namespace
-  const persistLists = useCallback((updatedLists: UserCustomList[]) => {
     if (typeof window === 'undefined') return;
-    const key = getUserKey(STORAGE_KEYS.CUSTOM_LISTS, userId);
-    localStorage.setItem(key, JSON.stringify(updatedLists));
+
+    // Load initial cached snapshot from localStorage for instantaneous zero-latency cold-loads
+    try {
+      const listsKey = getUserKey(STORAGE_KEYS.CUSTOM_LISTS, userId);
+      const rawLists = localStorage.getItem(listsKey);
+      setLists(rawLists ? JSON.parse(rawLists) : DEFAULT_LISTS);
+
+      const historyKey = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
+      const rawHistory = localStorage.getItem(historyKey);
+      setContinueWatching(rawHistory ? JSON.parse(rawHistory) : []);
+
+      const reactionsKey = getUserKey(STORAGE_KEYS.REACTIONS, userId);
+      const rawReactions = localStorage.getItem(reactionsKey);
+      setReactions(rawReactions ? JSON.parse(rawReactions) : {});
+
+      const commentsKey = getUserKey(STORAGE_KEYS.COMMENTS, userId);
+      const rawComments = localStorage.getItem(commentsKey);
+      setComments(rawComments ? JSON.parse(rawComments) : {});
+    } catch (err) {
+      console.warn('Initial storage load warning:', err);
+    }
+
+    if (!userId) return;
+
+    // Smart Guest-to-Cloud Merge on Login
+    const performGuestMerge = async () => {
+      if (isMergingRef.current) return;
+      isMergingRef.current = true;
+      try {
+        const guestListsRaw = localStorage.getItem(STORAGE_KEYS.CUSTOM_LISTS);
+        const guestHistoryRaw = localStorage.getItem(STORAGE_KEYS.CONTINUE_WATCHING);
+        const guestReactionsRaw = localStorage.getItem(STORAGE_KEYS.REACTIONS);
+
+        const guestLists: UserCustomList[] = guestListsRaw ? JSON.parse(guestListsRaw) : [];
+        const guestHistory: ContinueWatchingItem[] = guestHistoryRaw ? JSON.parse(guestHistoryRaw) : [];
+        const guestReactions: UserReactions = guestReactionsRaw ? JSON.parse(guestReactionsRaw) : {};
+
+        const hasGuestData =
+          (guestLists.length > 0 && guestLists.some((l) => l.items.length > 0)) ||
+          guestHistory.length > 0 ||
+          Object.keys(guestReactions).length > 0;
+
+        if (hasGuestData) {
+          const userDocRef = doc(db, 'users', userId);
+          const snap = await getDoc(userDocRef);
+          const cloudData = snap.exists() ? snap.data() : {};
+
+          const cloudLists: UserCustomList[] = Array.isArray(cloudData?.lists) ? cloudData.lists : DEFAULT_LISTS;
+          const cloudHistory: ContinueWatchingItem[] = Array.isArray(cloudData?.continueWatching) ? cloudData.continueWatching : [];
+          const cloudReactions: UserReactions = cloudData?.likes || {};
+
+          // Merge Continue Watching: Pick newer updatedAt
+          const historyMap = new Map<string, ContinueWatchingItem>();
+          [...cloudHistory, ...guestHistory].forEach((item) => {
+            const key = `${item.mediaType}_${item.tmdbId}`;
+            const existing = historyMap.get(key);
+            if (!existing || (item.updatedAt || 0) > (existing.updatedAt || 0)) {
+              historyMap.set(key, item);
+            }
+          });
+          const mergedHistory = Array.from(historyMap.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+          // Merge Lists: Combine watchlist/favorites items & append any custom lists
+          const mergedLists = [...cloudLists];
+          guestLists.forEach((gList) => {
+            const cloudTarget = mergedLists.find((cl) => cl.id === gList.id);
+            if (cloudTarget) {
+              const existingKeys = new Set(cloudTarget.items.map((it) => `${it.mediaType}_${it.id}`));
+              gList.items.forEach((gItem) => {
+                if (!existingKeys.has(`${gItem.mediaType}_${gItem.id}`)) {
+                  cloudTarget.items.push(gItem);
+                  existingKeys.add(`${gItem.mediaType}_${gItem.id}`);
+                }
+              });
+            } else if (gList.items.length > 0) {
+              mergedLists.push(gList);
+            }
+          });
+
+          // Merge Reactions
+          const mergedReactions: UserReactions = { ...cloudReactions, ...guestReactions };
+
+          // Save merged data to Firestore
+          await setDoc(
+            userDocRef,
+            {
+              lists: mergedLists,
+              continueWatching: mergedHistory,
+              likes: mergedReactions,
+              updatedAt: Date.now(),
+            },
+            { merge: true }
+          );
+
+          // Clear guest keys to prevent duplicate merging on subsequent logins
+          localStorage.removeItem(STORAGE_KEYS.CUSTOM_LISTS);
+          localStorage.removeItem(STORAGE_KEYS.CONTINUE_WATCHING);
+          localStorage.removeItem(STORAGE_KEYS.REACTIONS);
+        }
+      } catch (mergeErr) {
+        console.warn('Guest merge warning:', mergeErr);
+      } finally {
+        isMergingRef.current = false;
+      }
+    };
+
+    performGuestMerge();
+
+    // 2. Real-Time Snapshot Listener for users/{uid}
+    const userDocRef = doc(db, 'users', userId);
+    const unsubscribeSnapshot = onSnapshot(
+      userDocRef,
+      (snapshot) => {
+        if (!snapshot.exists()) return;
+        const data = snapshot.data();
+
+        if (Array.isArray(data.lists)) {
+          setLists(data.lists);
+          localStorage.setItem(getUserKey(STORAGE_KEYS.CUSTOM_LISTS, userId), JSON.stringify(data.lists));
+        }
+
+        if (Array.isArray(data.continueWatching)) {
+          setContinueWatching(data.continueWatching);
+          localStorage.setItem(getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId), JSON.stringify(data.continueWatching));
+        }
+
+        if (data.likes && typeof data.likes === 'object') {
+          setReactions(data.likes);
+          localStorage.setItem(getUserKey(STORAGE_KEYS.REACTIONS, userId), JSON.stringify(data.likes));
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, `users/${userId}`);
+      }
+    );
+
+    return () => {
+      unsubscribeSnapshot();
+    };
   }, [userId]);
 
-  const persistHistory = useCallback((updatedHistory: ContinueWatchingItem[]) => {
-    if (typeof window === 'undefined') return;
-    const key = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
-    localStorage.setItem(key, JSON.stringify(updatedHistory.slice(0, 50)));
+  // Flush pending throttled video progress immediately to Firestore
+  const flushWatchProgress = useCallback(() => {
+    if (!userId || !pendingHistoryRef.current) return;
+    if (throttleTimeoutRef.current) {
+      clearTimeout(throttleTimeoutRef.current);
+      throttleTimeoutRef.current = null;
+    }
+    const itemsToFlush = pendingHistoryRef.current;
+    pendingHistoryRef.current = null;
+    lastFirestoreSyncTimeRef.current = Date.now();
+
+    setDoc(
+      doc(db, 'users', userId),
+      {
+        continueWatching: itemsToFlush,
+        updatedAt: Date.now(),
+      },
+      { merge: true }
+    ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
   }, [userId]);
 
-  const persistReactions = useCallback((updatedReactions: UserReactions) => {
-    if (typeof window === 'undefined') return;
-    const key = getUserKey(STORAGE_KEYS.REACTIONS, userId);
-    localStorage.setItem(key, JSON.stringify(updatedReactions));
-  }, [userId]);
+  // Continue Watching Save with Smart 15-Second Throttling & Immediate Triggers
+  const saveWatchProgress = useCallback(
+    (item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>, immediate?: boolean) => {
+      const now = Date.now();
 
-  const persistComments = useCallback((updatedComments: Record<number, CommentItem[]>) => {
-    if (typeof window === 'undefined') return;
-    const key = getUserKey(STORAGE_KEYS.COMMENTS, userId);
-    localStorage.setItem(key, JSON.stringify(updatedComments));
-  }, [userId]);
+      setContinueWatching((prev) => {
+        const existing = prev.find((p) => p.tmdbId === item.tmdbId && p.mediaType === item.mediaType);
+        const filtered = prev.filter((p) => !(p.tmdbId === item.tmdbId && p.mediaType === item.mediaType));
+        const updated: ContinueWatchingItem[] = [
+          {
+            ...existing,
+            ...item,
+            timestamp: existing?.timestamp || now,
+            updatedAt: now,
+          },
+          ...filtered,
+        ].slice(0, 30); // Keep top 30 items
 
-  // Continue Watching Actions
-  const saveProgress = useCallback((item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>) => {
-    const now = Date.now();
-    setContinueWatching((prev) => {
-      const existing = prev.find((p) => p.tmdbId === item.tmdbId && p.mediaType === item.mediaType);
-      const filtered = prev.filter((p) => !(p.tmdbId === item.tmdbId && p.mediaType === item.mediaType));
-      const updated: ContinueWatchingItem[] = [
-        {
-          ...item,
-          progressSeconds: item.progressSeconds ?? existing?.progressSeconds,
-          durationSeconds: item.durationSeconds ?? existing?.durationSeconds,
-          timestamp: existing?.timestamp || now,
-          updatedAt: now,
-        },
-        ...filtered,
-      ];
-      persistHistory(updated);
-      return updated;
-    });
-  }, [persistHistory]);
+        // 1. Save to localStorage every second for instant local persistence
+        const storageKey = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
 
-  const saveWatchProgress = useCallback((item: Omit<ContinueWatchingItem, 'timestamp' | 'updatedAt'>) => {
-    const now = Date.now();
-    setContinueWatching((prev) => {
-      const existing = prev.find((p) => p.tmdbId === item.tmdbId && p.mediaType === item.mediaType);
-      const filtered = prev.filter((p) => !(p.tmdbId === item.tmdbId && p.mediaType === item.mediaType));
-      const updated: ContinueWatchingItem[] = [
-        {
-          ...existing,
-          ...item,
-          timestamp: existing?.timestamp || now,
-          updatedAt: now,
-        },
-        ...filtered,
-      ];
-      persistHistory(updated);
-      return updated;
-    });
-  }, [persistHistory]);
+        // 2. Cloud Firestore Throttled / Immediate sync
+        if (userId) {
+          pendingHistoryRef.current = updated;
+
+          if (immediate) {
+            // Immediate write on pause, ended, episode switch, navigation
+            if (throttleTimeoutRef.current) {
+              clearTimeout(throttleTimeoutRef.current);
+              throttleTimeoutRef.current = null;
+            }
+            lastFirestoreSyncTimeRef.current = now;
+            setDoc(
+              doc(db, 'users', userId),
+              {
+                continueWatching: updated,
+                updatedAt: now,
+              },
+              { merge: true }
+            ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+          } else {
+            // Throttled: Write once every 15s during active playback
+            const timeSinceLastSync = now - lastFirestoreSyncTimeRef.current;
+            if (timeSinceLastSync >= 15000) {
+              if (throttleTimeoutRef.current) {
+                clearTimeout(throttleTimeoutRef.current);
+                throttleTimeoutRef.current = null;
+              }
+              lastFirestoreSyncTimeRef.current = now;
+              setDoc(
+                doc(db, 'users', userId),
+                {
+                  continueWatching: updated,
+                  updatedAt: now,
+                },
+                { merge: true }
+              ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+            } else if (!throttleTimeoutRef.current) {
+              const remainingWait = Math.max(1000, 15000 - timeSinceLastSync);
+              throttleTimeoutRef.current = setTimeout(() => {
+                if (pendingHistoryRef.current && userId) {
+                  setDoc(
+                    doc(db, 'users', userId),
+                    {
+                      continueWatching: pendingHistoryRef.current,
+                      updatedAt: Date.now(),
+                    },
+                    { merge: true }
+                  ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+                  lastFirestoreSyncTimeRef.current = Date.now();
+                  pendingHistoryRef.current = null;
+                }
+                throttleTimeoutRef.current = null;
+              }, remainingWait);
+            }
+          }
+        }
+
+        return updated;
+      });
+    },
+    [userId]
+  );
+
+  const saveProgress = saveWatchProgress;
 
   const getSavedProgress = useCallback(
     (tmdbId: number, mediaType: 'movie' | 'tv', season?: number, episode?: number) => {
@@ -281,241 +435,346 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [continueWatching]
   );
 
-  const removeProgress = useCallback((tmdbId: number, mediaType: 'movie' | 'tv') => {
-    setContinueWatching((prev) => {
-      const updated = prev.filter((p) => !(p.tmdbId === tmdbId && p.mediaType === mediaType));
-      persistHistory(updated);
-      return updated;
-    });
-    showToast('Removed from Continue Watching', 'info');
-  }, [persistHistory, showToast]);
+  const removeProgress = useCallback(
+    (tmdbId: number, mediaType: 'movie' | 'tv') => {
+      setContinueWatching((prev) => {
+        const updated = prev.filter((p) => !(p.tmdbId === tmdbId && p.mediaType === mediaType));
+        const storageKey = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+
+        if (userId) {
+          setDoc(
+            doc(db, 'users', userId),
+            {
+              continueWatching: updated,
+              updatedAt: Date.now(),
+            },
+            { merge: true }
+          ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+        }
+
+        return updated;
+      });
+      showToast('Removed from Continue Watching', 'info');
+    },
+    [userId, showToast]
+  );
 
   const clearAllHistory = useCallback(() => {
     setContinueWatching([]);
-    persistHistory([]);
-    showToast('Watch history cleared', 'info');
-  }, [persistHistory, showToast]);
+    const storageKey = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
+    localStorage.removeItem(storageKey);
 
-  // Custom List Actions
-  const createList = useCallback((name: string, description?: string) => {
-    const id = `list-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    const newList: UserCustomList = {
-      id,
-      name: name.trim() || 'New List',
-      description: description?.trim() || '',
-      createdAt: Date.now(),
-      items: [],
-    };
-    setLists((prev) => {
-      const updated = [...prev, newList];
-      persistLists(updated);
-      return updated;
-    });
-    showToast(`Created list "${newList.name}"`, 'success');
-    return id;
-  }, [persistLists, showToast]);
-
-  const deleteList = useCallback((id: string) => {
-    setLists((prev) => {
-      const target = prev.find((l) => l.id === id);
-      if (target?.isDefault) {
-        showToast('Default lists cannot be deleted', 'error');
-        return prev;
-      }
-      const updated = prev.filter((l) => l.id !== id);
-      persistLists(updated);
-      showToast(`Deleted list "${target?.name || ''}"`, 'info');
-      return updated;
-    });
-  }, [persistLists, showToast]);
-
-  const renameList = useCallback((id: string, name: string) => {
-    if (!name.trim()) return;
-    setLists((prev) => {
-      const updated = prev.map((l) => (l.id === id ? { ...l, name: name.trim() } : l));
-      persistLists(updated);
-      return updated;
-    });
-    showToast('List renamed', 'success');
-  }, [persistLists, showToast]);
-
-  const addItemToList = useCallback((listId: string, item: CustomListItem) => {
-    setLists((prev) => {
-      const list = prev.find((l) => l.id === listId);
-      if (!list) return prev;
-      if (list.items.some((i) => i.id === item.id && i.mediaType === item.mediaType)) {
-        showToast(`Already in "${list.name}"`, 'info');
-        return prev;
-      }
-      const updatedList = {
-        ...list,
-        items: [{ ...item, addedAt: Date.now() }, ...list.items],
-      };
-      const updated = prev.map((l) => (l.id === listId ? updatedList : l));
-      persistLists(updated);
-      showToast(`Added to "${list.name}"`, 'success');
-      return updated;
-    });
-  }, [persistLists, showToast]);
-
-  const removeItemFromList = useCallback((listId: string, itemId: number) => {
-    setLists((prev) => {
-      const list = prev.find((l) => l.id === listId);
-      if (!list) return prev;
-      const updatedList = {
-        ...list,
-        items: list.items.filter((i) => i.id !== itemId),
-      };
-      const updated = prev.map((l) => (l.id === listId ? updatedList : l));
-      persistLists(updated);
-      showToast(`Removed from "${list.name}"`, 'info');
-      return updated;
-    });
-  }, [persistLists, showToast]);
-
-  const isItemInList = useCallback((listId: string, itemId: number): boolean => {
-    const list = lists.find((l) => l.id === listId);
-    return list ? list.items.some((i) => i.id === itemId) : false;
-  }, [lists]);
-
-  const isItemInWatchlist = useCallback((itemId: number): boolean => {
-    return isItemInList('watchlist', itemId);
-  }, [isItemInList]);
-
-  const toggleWatchlist = useCallback((item: {
-    id: number;
-    mediaType: 'movie' | 'tv';
-    title: string;
-    posterPath: string | null;
-    year?: string;
-    rating?: number;
-  }): boolean => {
-    const inList = isItemInWatchlist(item.id);
-    if (inList) {
-      removeItemFromList('watchlist', item.id);
-      return false;
-    } else {
-      addItemToList('watchlist', {
-        id: item.id,
-        mediaType: item.mediaType,
-        title: item.title,
-        posterPath: item.posterPath,
-        year: item.year,
-        rating: item.rating,
-        addedAt: Date.now(),
-      });
-      return true;
+    if (userId) {
+      setDoc(
+        doc(db, 'users', userId),
+        {
+          continueWatching: [],
+          updatedAt: Date.now(),
+        },
+        { merge: true }
+      ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
     }
-  }, [isItemInWatchlist, removeItemFromList, addItemToList]);
 
-  // Reactions
-  const getReactionData = useCallback((tmdbId: number) => {
-    const key = String(tmdbId);
-    const existing = reactions[key];
-    if (existing) return existing;
-    const baseLikes = 40 + (tmdbId % 300);
-    const baseDislikes = 2 + (tmdbId % 15);
-    return {
-      likes: baseLikes,
-      dislikes: baseDislikes,
-      userReaction: null,
-    };
-  }, [reactions]);
+    showToast('Watch history cleared', 'info');
+  }, [userId, showToast]);
 
-  const toggleReaction = useCallback((tmdbId: number, type: 'like' | 'dislike') => {
-    const key = String(tmdbId);
-    setReactions((prev) => {
-      const current = prev[key] || {
-        likes: 40 + (tmdbId % 300),
+  // Custom List Operations with Cloud Sync
+  const syncListsToCloud = useCallback(
+    (newLists: UserCustomList[]) => {
+      const storageKey = getUserKey(STORAGE_KEYS.CUSTOM_LISTS, userId);
+      localStorage.setItem(storageKey, JSON.stringify(newLists));
+
+      if (userId) {
+        setDoc(
+          doc(db, 'users', userId),
+          {
+            lists: newLists,
+            updatedAt: Date.now(),
+          },
+          { merge: true }
+        ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+      }
+    },
+    [userId]
+  );
+
+  const createList = useCallback(
+    (name: string, description?: string) => {
+      const id = `list-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const newList: UserCustomList = {
+        id,
+        name: name.trim() || 'New List',
+        description: description?.trim() || '',
+        createdAt: Date.now(),
+        items: [],
+      };
+      setLists((prev) => {
+        const updated = [...prev, newList];
+        syncListsToCloud(updated);
+        return updated;
+      });
+      showToast(`Created list "${newList.name}"`, 'success');
+      return id;
+    },
+    [syncListsToCloud, showToast]
+  );
+
+  const deleteList = useCallback(
+    (id: string) => {
+      setLists((prev) => {
+        const target = prev.find((l) => l.id === id);
+        if (target?.isDefault) {
+          showToast('Default lists cannot be deleted', 'error');
+          return prev;
+        }
+        const updated = prev.filter((l) => l.id !== id);
+        syncListsToCloud(updated);
+        showToast(`Deleted list "${target?.name || ''}"`, 'info');
+        return updated;
+      });
+    },
+    [syncListsToCloud, showToast]
+  );
+
+  const renameList = useCallback(
+    (id: string, name: string) => {
+      if (!name.trim()) return;
+      setLists((prev) => {
+        const updated = prev.map((l) => (l.id === id ? { ...l, name: name.trim() } : l));
+        syncListsToCloud(updated);
+        return updated;
+      });
+      showToast('List renamed', 'success');
+    },
+    [syncListsToCloud, showToast]
+  );
+
+  const addItemToList = useCallback(
+    (listId: string, item: CustomListItem) => {
+      setLists((prev) => {
+        const list = prev.find((l) => l.id === listId);
+        if (!list) return prev;
+        if (list.items.some((i) => i.id === item.id && i.mediaType === item.mediaType)) {
+          showToast(`Already in "${list.name}"`, 'info');
+          return prev;
+        }
+        const updatedList = {
+          ...list,
+          items: [item, ...list.items],
+        };
+        const updated = prev.map((l) => (l.id === listId ? updatedList : l));
+        syncListsToCloud(updated);
+        showToast(`Saved to "${list.name}"`, 'success');
+        return updated;
+      });
+    },
+    [syncListsToCloud, showToast]
+  );
+
+  const removeItemFromList = useCallback(
+    (listId: string, itemId: number) => {
+      setLists((prev) => {
+        const list = prev.find((l) => l.id === listId);
+        if (!list) return prev;
+        const updatedList = {
+          ...list,
+          items: list.items.filter((i) => i.id !== itemId),
+        };
+        const updated = prev.map((l) => (l.id === listId ? updatedList : l));
+        syncListsToCloud(updated);
+        showToast(`Removed from "${list.name}"`, 'info');
+        return updated;
+      });
+    },
+    [syncListsToCloud, showToast]
+  );
+
+  const isItemInList = useCallback(
+    (listId: string, itemId: number): boolean => {
+      const list = lists.find((l) => l.id === listId);
+      return !!list && list.items.some((i) => i.id === itemId);
+    },
+    [lists]
+  );
+
+  const isItemInWatchlist = useCallback(
+    (itemId: number): boolean => {
+      const watchlist = lists.find((l) => l.id === 'watchlist');
+      return !!watchlist && watchlist.items.some((i) => i.id === itemId);
+    },
+    [lists]
+  );
+
+  const toggleWatchlist = useCallback(
+    (item: {
+      id: number;
+      mediaType: 'movie' | 'tv';
+      title: string;
+      posterPath: string | null;
+      year?: string;
+      rating?: number;
+    }): boolean => {
+      const watchlist = lists.find((l) => l.id === 'watchlist');
+      if (!watchlist) return false;
+
+      const exists = watchlist.items.some((i) => i.id === item.id && i.mediaType === item.mediaType);
+      if (exists) {
+        removeItemFromList('watchlist', item.id);
+        return false;
+      } else {
+        addItemToList('watchlist', {
+          id: item.id,
+          mediaType: item.mediaType,
+          title: item.title,
+          posterPath: item.posterPath,
+          year: item.year,
+          rating: item.rating,
+          addedAt: Date.now(),
+        });
+        return true;
+      }
+    },
+    [lists, removeItemFromList, addItemToList]
+  );
+
+  // Reactions & Likes Cloud Sync
+  const toggleReaction = useCallback(
+    (tmdbId: number, type: 'like' | 'dislike') => {
+      setReactions((prev) => {
+        const key = tmdbId;
+        const current = prev[key] || {
+          likes: 12 + (tmdbId % 40),
+          dislikes: 2 + (tmdbId % 15),
+          userReaction: null,
+        };
+
+        let newLikes = current.likes;
+        let newDislikes = current.dislikes;
+        let newReaction: 'like' | 'dislike' | null = null;
+
+        if (current.userReaction === type) {
+          if (type === 'like') newLikes = Math.max(0, newLikes - 1);
+          if (type === 'dislike') newDislikes = Math.max(0, newDislikes - 1);
+          newReaction = null;
+        } else {
+          if (current.userReaction === 'like') newLikes = Math.max(0, newLikes - 1);
+          if (current.userReaction === 'dislike') newDislikes = Math.max(0, newDislikes - 1);
+
+          if (type === 'like') newLikes += 1;
+          if (type === 'dislike') newDislikes += 1;
+          newReaction = type;
+        }
+
+        const updated: UserReactions = {
+          ...prev,
+          [key]: {
+            likes: newLikes,
+            dislikes: newDislikes,
+            userReaction: newReaction,
+          },
+        };
+
+        const storageKey = getUserKey(STORAGE_KEYS.REACTIONS, userId);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+
+        if (userId) {
+          setDoc(
+            doc(db, 'users', userId),
+            {
+              likes: updated,
+              updatedAt: Date.now(),
+            },
+            { merge: true }
+          ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+        }
+
+        return updated;
+      });
+    },
+    [userId]
+  );
+
+  const getReactionData = useCallback(
+    (tmdbId: number) => {
+      const data = reactions[tmdbId];
+      if (data) return data;
+      return {
+        likes: 12 + (tmdbId % 40),
         dislikes: 2 + (tmdbId % 15),
         userReaction: null,
       };
+    },
+    [reactions]
+  );
 
-      let newLikes = current.likes;
-      let newDislikes = current.dislikes;
-      let newReaction: 'like' | 'dislike' | null = null;
+  // Comments (Local Storage Fallback State)
+  const addComment = useCallback(
+    (tmdbId: number, author: string, content: string, userAvatar?: string, username?: string) => {
+      if (!content.trim()) return;
+      const cleanAuthor = author.trim() || 'Anonymous';
+      const newComment: CommentItem = {
+        id: `c-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        tmdbId,
+        author: cleanAuthor,
+        content: content.trim(),
+        createdAt: Date.now(),
+        upvotes: 0,
+        isUserCreated: true,
+        ...(userAvatar ? { userAvatar } : {}),
+        ...(username ? { username } : {}),
+      } as any;
 
-      if (current.userReaction === type) {
-        if (type === 'like') newLikes = Math.max(0, newLikes - 1);
-        if (type === 'dislike') newDislikes = Math.max(0, newDislikes - 1);
-        newReaction = null;
-      } else {
-        if (current.userReaction === 'like') newLikes = Math.max(0, newLikes - 1);
-        if (current.userReaction === 'dislike') newDislikes = Math.max(0, newDislikes - 1);
+      setComments((prev) => {
+        const currentList = prev[tmdbId] || [];
+        const updated = {
+          ...prev,
+          [tmdbId]: [newComment, ...currentList],
+        };
+        const storageKey = getUserKey(STORAGE_KEYS.COMMENTS, userId);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+        return updated;
+      });
+      showToast('Comment posted', 'success');
+    },
+    [userId, showToast]
+  );
 
-        if (type === 'like') newLikes += 1;
-        if (type === 'dislike') newDislikes += 1;
-        newReaction = type;
-      }
+  const deleteComment = useCallback(
+    (tmdbId: number, commentId: string) => {
+      setComments((prev) => {
+        const currentList = prev[tmdbId] || [];
+        const updated = {
+          ...prev,
+          [tmdbId]: currentList.filter((c) => c.id !== commentId),
+        };
+        const storageKey = getUserKey(STORAGE_KEYS.COMMENTS, userId);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+        return updated;
+      });
+      showToast('Comment deleted', 'info');
+    },
+    [userId, showToast]
+  );
 
-      const updated = {
-        ...prev,
-        [key]: {
-          likes: newLikes,
-          dislikes: newDislikes,
-          userReaction: newReaction,
-        },
-      };
-      persistReactions(updated);
-      return updated;
-    });
-  }, [persistReactions]);
+  const upvoteComment = useCallback(
+    (tmdbId: number, commentId: string) => {
+      setComments((prev) => {
+        const currentList = prev[tmdbId] || [];
+        const updatedList = currentList.map((c) => (c.id === commentId ? { ...c, upvotes: c.upvotes + 1 } : c));
+        const updated = {
+          ...prev,
+          [tmdbId]: updatedList,
+        };
+        const storageKey = getUserKey(STORAGE_KEYS.COMMENTS, userId);
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+        return updated;
+      });
+    },
+    [userId]
+  );
 
-  // Comments
-  const addComment = useCallback((tmdbId: number, author: string, content: string, userAvatar?: string, username?: string) => {
-    if (!content.trim()) return;
-    const cleanAuthor = author.trim() || 'Anonymous';
-    const newComment: CommentItem = {
-      id: `c-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-      tmdbId,
-      author: cleanAuthor,
-      content: content.trim(),
-      createdAt: Date.now(),
-      upvotes: 0,
-      isUserCreated: true,
-      ...(userAvatar ? { userAvatar } : {}),
-      ...(username ? { username } : {}),
-    } as any;
-
-    setComments((prev) => {
-      const currentList = prev[tmdbId] || [];
-      const updated = {
-        ...prev,
-        [tmdbId]: [newComment, ...currentList],
-      };
-      persistComments(updated);
-      return updated;
-    });
-    showToast('Comment posted', 'success');
-  }, [persistComments, showToast]);
-
-  const deleteComment = useCallback((tmdbId: number, commentId: string) => {
-    setComments((prev) => {
-      const currentList = prev[tmdbId] || [];
-      const updated = {
-        ...prev,
-        [tmdbId]: currentList.filter((c) => c.id !== commentId),
-      };
-      persistComments(updated);
-      return updated;
-    });
-    showToast('Comment deleted', 'info');
-  }, [persistComments, showToast]);
-
-  const upvoteComment = useCallback((tmdbId: number, commentId: string) => {
-    setComments((prev) => {
-      const currentList = prev[tmdbId] || [];
-      const updatedList = currentList.map((c) => (c.id === commentId ? { ...c, upvotes: c.upvotes + 1 } : c));
-      const updated = {
-        ...prev,
-        [tmdbId]: updatedList,
-      };
-      persistComments(updated);
-      return updated;
-    });
-  }, [persistComments]);
-
-  // Export / Import
+  // Backup Import & Export
   const exportBackup = useCallback(() => {
     try {
       const jsonStr = serializeBackup(lists, continueWatching);
@@ -534,56 +793,70 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [lists, continueWatching, showToast]);
 
-  const importBackup = useCallback((jsonContent: string) => {
-    try {
-      const { lists: importedLists, history: importedHistory } = validateAndParseBackup(jsonContent);
+  const importBackup = useCallback(
+    (jsonContent: string) => {
+      try {
+        const { lists: importedLists, history: importedHistory } = validateAndParseBackup(jsonContent);
 
-      setLists((prev) => {
-        const existingIds = new Set(prev.map((l) => l.id));
-        const merged = [...prev];
-        for (const imp of importedLists) {
-          if (!existingIds.has(imp.id)) {
-            merged.push(imp);
-            existingIds.add(imp.id);
-          } else {
-            const target = merged.find((l) => l.id === imp.id);
-            if (target) {
-              const existingItemKeys = new Set(target.items.map((it) => `${it.mediaType}-${it.id}`));
-              for (const it of imp.items) {
-                if (!existingItemKeys.has(`${it.mediaType}-${it.id}`)) {
-                  target.items.push(it);
-                  existingItemKeys.add(`${it.mediaType}-${it.id}`);
+        setLists((prev) => {
+          const existingIds = new Set(prev.map((l) => l.id));
+          const merged = [...prev];
+          for (const imp of importedLists) {
+            if (!existingIds.has(imp.id)) {
+              merged.push(imp);
+              existingIds.add(imp.id);
+            } else {
+              const target = merged.find((l) => l.id === imp.id);
+              if (target) {
+                const existingItemKeys = new Set(target.items.map((it) => `${it.mediaType}-${it.id}`));
+                for (const it of imp.items) {
+                  if (!existingItemKeys.has(`${it.mediaType}-${it.id}`)) {
+                    target.items.push(it);
+                    existingItemKeys.add(`${it.mediaType}-${it.id}`);
+                  }
                 }
               }
             }
           }
-        }
-        persistLists(merged);
-        return merged;
-      });
-
-      if (importedHistory.length > 0) {
-        setContinueWatching((prev) => {
-          const map = new Map<string, ContinueWatchingItem>();
-          [...importedHistory, ...prev].forEach((item) => {
-            const key = `${item.mediaType}-${item.tmdbId}`;
-            if (!map.has(key) || item.updatedAt > (map.get(key)?.updatedAt || 0)) {
-              map.set(key, item);
-            }
-          });
-          const merged = Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
-          persistHistory(merged);
+          syncListsToCloud(merged);
           return merged;
         });
-      }
 
-      showToast(`Imported ${importedLists.length} lists successfully!`, 'success');
-      return { success: true, message: `Successfully imported ${importedLists.length} lists.` };
-    } catch (err: any) {
-      showToast(`Import error: ${err.message}`, 'error');
-      return { success: false, message: err.message };
-    }
-  }, [persistLists, persistHistory, showToast]);
+        if (importedHistory.length > 0) {
+          setContinueWatching((prev) => {
+            const map = new Map<string, ContinueWatchingItem>();
+            [...importedHistory, ...prev].forEach((item) => {
+              const key = `${item.mediaType}-${item.tmdbId}`;
+              if (!map.has(key) || item.updatedAt > (map.get(key)?.updatedAt || 0)) {
+                map.set(key, item);
+              }
+            });
+            const merged = Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+            const storageKey = getUserKey(STORAGE_KEYS.CONTINUE_WATCHING, userId);
+            localStorage.setItem(storageKey, JSON.stringify(merged));
+            if (userId) {
+              setDoc(
+                doc(db, 'users', userId),
+                {
+                  continueWatching: merged,
+                  updatedAt: Date.now(),
+                },
+                { merge: true }
+              ).catch((err) => handleFirestoreError(err, OperationType.WRITE, `users/${userId}`));
+            }
+            return merged;
+          });
+        }
+
+        showToast(`Imported ${importedLists.length} lists successfully!`, 'success');
+        return { success: true, message: `Successfully imported ${importedLists.length} lists.` };
+      } catch (err: any) {
+        showToast(`Import error: ${err.message}`, 'error');
+        return { success: false, message: err.message };
+      }
+    },
+    [userId, syncListsToCloud, showToast]
+  );
 
   const totalSaved = useMemo(() => {
     return lists.reduce((acc, curr) => acc + curr.items.length, 0);
@@ -597,6 +870,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         continueWatching,
         saveProgress,
         saveWatchProgress,
+        flushWatchProgress,
         getSavedProgress,
         removeProgress,
         clearAllHistory,

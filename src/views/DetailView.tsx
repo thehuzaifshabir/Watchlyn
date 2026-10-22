@@ -244,8 +244,8 @@ export const DetailView: React.FC<DetailViewProps> = ({ mediaType, id }) => {
       {/* 5. Official YouTube Trailers */}
       <TrailersSection videos={videos} />
 
-      {/* 6. Comments Section with Real Persistence */}
-      <CommentsSection tmdbId={id} />
+      {/* 6. Comments Section with Real Persistence & Cloud Sync */}
+      <CommentsSection tmdbId={id} mediaType={mediaType} />
 
       {/* 7. You Might Also Like */}
       {recommendations.length > 0 && (

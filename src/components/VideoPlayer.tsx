@@ -26,7 +26,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   backdropPath,
   onEpisodeEnded,
 }) => {
-  const { getSavedProgress, saveWatchProgress } = useApp();
+  const { getSavedProgress, saveWatchProgress, flushWatchProgress } = useApp();
 
   const [activeServerId, setActiveServerId] = useState<string>('vidy');
   const [reloadKey, setReloadKey] = useState<number>(0);
@@ -53,6 +53,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const handleServerChange = (serverId: string) => {
     if (serverId !== activeServerId) {
+      flushWatchProgress();
       setIsIframeLoading(true);
       setActiveServerId(serverId);
     }
@@ -62,6 +63,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     setIsIframeLoading(true);
     setReloadKey((prev) => prev + 1);
   };
+
+  // Immediate sync when Season or Episode changes
+  useEffect(() => {
+    flushWatchProgress();
+  }, [season, episode, flushWatchProgress]);
+
+  // Immediate sync when navigating away (visibilitychange or unmount)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushWatchProgress();
+      }
+    };
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      flushWatchProgress();
+    };
+  }, [flushWatchProgress]);
 
   // Real-Time Watch Progress Sync via window.postMessage (Vidy Player Event Integration)
   useEffect(() => {
@@ -79,19 +99,23 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         ) {
           const currentTime = Math.floor(Number(payload.currentTime) || 0);
           const duration = Math.floor(Number(payload.duration) || 0);
+          const isImmediate = payload.event === 'pause' || payload.event === 'ended';
 
           if (currentTime > 0) {
-            saveWatchProgress({
-              tmdbId,
-              mediaType,
-              title,
-              posterPath: posterPath || null,
-              backdropPath: backdropPath || null,
-              season: mediaType === 'tv' ? season : undefined,
-              episode: mediaType === 'tv' ? episode : undefined,
-              progressSeconds: currentTime,
-              durationSeconds: duration > 0 ? duration : undefined,
-            });
+            saveWatchProgress(
+              {
+                tmdbId,
+                mediaType,
+                title,
+                posterPath: posterPath || null,
+                backdropPath: backdropPath || null,
+                season: mediaType === 'tv' ? season : undefined,
+                episode: mediaType === 'tv' ? episode : undefined,
+                progressSeconds: currentTime,
+                durationSeconds: duration > 0 ? duration : undefined,
+              },
+              isImmediate
+            );
           }
 
           // Auto-advance parent UI state when a TV episode ends

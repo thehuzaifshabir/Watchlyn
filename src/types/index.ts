@@ -182,6 +182,8 @@ export interface CommentItem {
   createdAt: number;
   upvotes: number;
   isUserCreated?: boolean;
+  userAvatar?: string;
+  username?: string;
 }
 
 export interface UserReactions {
