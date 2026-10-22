@@ -136,7 +136,7 @@ export const PosterCard: React.FC<PosterCardProps> = ({
         )}
       </div>
 
-      {/* Card Metadata Footer (Exact Cinejoy spec: Title 1-line truncate, Release Year) */}
+      {/* Card Metadata Footer (Watchlyn spec: Title 1-line truncate, Release Year) */}
       <div className="mt-2 flex flex-col px-0.5">
         <h3 className="truncate text-xs sm:text-sm font-medium text-[#f8fafc] group-hover:text-white transition-colors" title={title}>
           {title}

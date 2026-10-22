@@ -204,7 +204,7 @@ export const MetadataSection: React.FC<MetadataSectionProps> = ({
         )}
       </div>
 
-      {/* Live "Ends At" Calculator & Financial / Spec Pills (Exact Cinejoy requirement) */}
+      {/* Live "Ends At" Calculator & Financial / Spec Pills (Watchlyn requirement) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
         {/* Live Ends At Calculator Pill */}
         {endsAtText && (

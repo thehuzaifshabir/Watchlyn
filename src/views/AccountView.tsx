@@ -162,7 +162,7 @@ export const AccountView: React.FC = () => {
       const signUpRes = await signUp({
         name: 'Alex Johnson',
         username: 'alex_cinema',
-        email: 'alex@cinejoy.pk',
+        email: 'alex@watchlyn.com',
         password: 'password123',
         avatar: PRESET_AVATARS[0].avatar,
       });
@@ -361,13 +361,13 @@ export const AccountView: React.FC = () => {
   if (!isAuthenticated || !user) {
     return (
       <div className="mx-auto max-w-2xl px-4 py-8 sm:py-12 min-h-screen">
-        {/* Cinejoy Account Branding */}
+        {/* Watchlyn Account Branding */}
         <div className="text-center mb-8">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#e50914]/15 border border-[#e50914]/30 shadow-lg mb-3">
             <User className="h-7 w-7 text-[#e50914]" />
           </div>
           <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
-            Cinejoy Account
+            Watchlyn Account
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-1 max-w-md mx-auto">
             Sign in to sync your custom watchlists, resume episodes across devices, and personalize your streaming experience.
@@ -443,7 +443,7 @@ export const AccountView: React.FC = () => {
               <input
                 type="text"
                 autoComplete="username"
-                placeholder="e.g. alex@cinejoy.pk or alex_cinema"
+                placeholder="e.g. alex@watchlyn.com or alex_cinema"
                 value={loginId}
                 onChange={(e) => setLoginId(e.target.value)}
                 className="w-full rounded-xl bg-zinc-900 border border-zinc-700/80 px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 focus:border-[#e50914] focus:outline-none"
@@ -545,7 +545,7 @@ export const AccountView: React.FC = () => {
               </label>
               <input
                 type="email"
-                placeholder="alex@cinejoy.pk"
+                placeholder="alex@watchlyn.com"
                 value={regEmail}
                 onChange={(e) => setRegEmail(e.target.value)}
                 className="w-full rounded-xl bg-zinc-900 border border-zinc-700/80 px-3.5 py-2.5 text-sm text-white placeholder-zinc-500 focus:border-[#e50914] focus:outline-none"
@@ -770,7 +770,7 @@ export const AccountView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <h1 className="text-xl sm:text-2xl font-black text-white">{user.name}</h1>
                 <span className="rounded-md bg-red-950/60 border border-red-800/60 px-2 py-0.5 text-[10px] font-bold text-red-400">
-                  Cinejoy VIP
+                  Watchlyn VIP
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-zinc-400 font-mono mt-0.5">@{user.username}</p>
@@ -1425,7 +1425,7 @@ export const AccountView: React.FC = () => {
           <div className="rounded-2xl bg-[#121216] border border-[#1f1f26] p-5 sm:p-6 shadow-xl">
             <h3 className="text-base font-bold text-white mb-1">Profile Information</h3>
             <p className="text-xs text-zinc-400 mb-4">
-              Update your Cinejoy display name, bio, and avatar.
+              Update your Watchlyn display name, bio, and avatar.
             </p>
 
             <form onSubmit={handleSaveProfile} className="space-y-4">
@@ -1631,7 +1631,7 @@ export const AccountView: React.FC = () => {
           <div className="rounded-2xl bg-red-950/20 border border-red-900/40 p-5 sm:p-6 shadow-xl">
             <h3 className="text-base font-bold text-red-400 mb-1">Danger Zone</h3>
             <p className="text-xs text-zinc-400 mb-4">
-              Clear local cached queries or permanently delete your Cinejoy account.
+              Clear local cached queries or permanently delete your Watchlyn account.
             </p>
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-red-900/30">

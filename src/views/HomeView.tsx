@@ -201,7 +201,7 @@ export const HomeView: React.FC = () => {
         }
       />
 
-      {/* 8. Cinejoy Signature Editorial Rails */}
+      {/* 8. Watchlyn Signature Editorial Rails */}
       {/* Award Winning Movies */}
       <MediaRail
         title="Award-Winning Movies"

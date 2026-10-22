@@ -71,7 +71,7 @@ const AppContent: React.FC = () => {
         {renderView()}
       </main>
 
-      {/* Global Footer with Cinejoy disclaimer */}
+      {/* Global Footer with Watchlyn disclaimer */}
       <Footer />
 
       {/* Fixed Mobile Bottom Navigation Bar */}

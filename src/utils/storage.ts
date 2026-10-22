@@ -1,6 +1,13 @@
 import { ContinueWatchingItem, UserCustomList, CommentItem, UserReactions } from '../types';
 
 export const STORAGE_KEYS = {
+  CONTINUE_WATCHING: 'watchlyn_continue_watching',
+  CUSTOM_LISTS: 'watchlyn_custom_lists',
+  REACTIONS: 'watchlyn_reactions',
+  COMMENTS: 'watchlyn_comments',
+};
+
+const LEGACY_STORAGE_KEYS = {
   CONTINUE_WATCHING: 'cinejoy_continue_watching',
   CUSTOM_LISTS: 'cinejoy_custom_lists',
   REACTIONS: 'cinejoy_reactions',
@@ -29,7 +36,7 @@ export const DEFAULT_LISTS: UserCustomList[] = [
 export function loadStoredLists(): UserCustomList[] {
   if (typeof window === 'undefined') return DEFAULT_LISTS;
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOM_LISTS);
+    const raw = localStorage.getItem(STORAGE_KEYS.CUSTOM_LISTS) || localStorage.getItem(LEGACY_STORAGE_KEYS.CUSTOM_LISTS);
     if (!raw) return DEFAULT_LISTS;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
@@ -54,7 +61,7 @@ export function saveStoredLists(lists: UserCustomList[]): void {
 export function loadContinueWatching(): ContinueWatchingItem[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.CONTINUE_WATCHING);
+    const raw = localStorage.getItem(STORAGE_KEYS.CONTINUE_WATCHING) || localStorage.getItem(LEGACY_STORAGE_KEYS.CONTINUE_WATCHING);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -77,7 +84,7 @@ export function saveContinueWatchingList(items: ContinueWatchingItem[]): void {
 export function loadReactions(): UserReactions {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.REACTIONS);
+    const raw = localStorage.getItem(STORAGE_KEYS.REACTIONS) || localStorage.getItem(LEGACY_STORAGE_KEYS.REACTIONS);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -96,7 +103,7 @@ export function saveReactions(reactions: UserReactions): void {
 export function loadComments(): Record<number, CommentItem[]> {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.COMMENTS);
+    const raw = localStorage.getItem(STORAGE_KEYS.COMMENTS) || localStorage.getItem(LEGACY_STORAGE_KEYS.COMMENTS);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -115,7 +122,7 @@ export function saveComments(comments: Record<number, CommentItem[]>): void {
 export interface BackupPayload {
   version: number;
   exportedAt: string;
-  source: 'cinejoy';
+  source: 'watchlyn' | 'cinejoy';
   lists: UserCustomList[];
   history: ContinueWatchingItem[];
 }
@@ -124,7 +131,7 @@ export function serializeBackup(lists: UserCustomList[], history: ContinueWatchi
   const payload: BackupPayload = {
     version: 1,
     exportedAt: new Date().toISOString(),
-    source: 'cinejoy',
+    source: 'watchlyn',
     lists,
     history,
   };

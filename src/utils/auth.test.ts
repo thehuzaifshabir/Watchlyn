@@ -21,6 +21,7 @@ test('sanitizeUsername trims, lowercases, and strips @ and symbols', () => {
 
 test('validateEmail checks standard email patterns', () => {
   assert.equal(validateEmail('test@example.com'), true);
+  assert.equal(validateEmail('user.name@watchlyn.com'), true);
   assert.equal(validateEmail('user.name@cinejoy.pk'), true);
   assert.equal(validateEmail('invalid-email'), false);
   assert.equal(validateEmail('missing@domain'), false);

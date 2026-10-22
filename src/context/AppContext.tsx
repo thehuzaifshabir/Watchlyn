@@ -523,12 +523,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `cinejoy-account-backup-${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `watchlyn-account-backup-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast('Exported cinejoy-account-backup.json', 'success');
+      showToast('Exported watchlyn-account-backup.json', 'success');
     } catch (err: any) {
       showToast('Export failed: ' + err.message, 'error');
     }

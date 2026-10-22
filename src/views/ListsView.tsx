@@ -256,7 +256,7 @@ export const ListsView: React.FC = () => {
         </div>
       )}
 
-      {/* List Items / Exact Cinejoy Empty State */}
+      {/* List Items / Watchlyn Empty State */}
       {activeList && activeList.items.length > 0 ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4 md:gap-5">
           {activeList.items.map((item) => (
@@ -285,7 +285,7 @@ export const ListsView: React.FC = () => {
           ))}
         </div>
       ) : (
-        /* Exact Cinejoy Empty State required by prompt */
+        /* Watchlyn Empty State */
         <div className="my-12 py-16 px-4 text-center rounded-2xl bg-[#121216] border border-[#1f1f26] max-w-xl mx-auto shadow-xl">
           <FolderOpen className="mx-auto h-12 w-12 text-zinc-600 mb-3" />
           <h3 className="text-base sm:text-lg font-bold text-white mb-2">No lists yet</h3>

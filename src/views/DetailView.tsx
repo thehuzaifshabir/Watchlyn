@@ -229,7 +229,7 @@ export const DetailView: React.FC<DetailViewProps> = ({ mediaType, id }) => {
         />
       )}
 
-      {/* 3. Minute-Detail Metadata Section (Exact Cinejoy Layout) */}
+      {/* 3. Minute-Detail Metadata Section (Watchlyn Layout) */}
       {credits && (
         <MetadataSection
           media={media}

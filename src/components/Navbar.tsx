@@ -22,18 +22,15 @@ export const Navbar: React.FC = () => {
           <button
             type="button"
             onClick={() => navigate('/')}
-            aria-label="Cinejoy Home"
+            aria-label="watchlyn Home"
             className="group flex items-center gap-2 cursor-pointer focus:outline-none"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#e50914] to-red-800 text-white shadow-lg shadow-red-950/50 group-hover:scale-105 transition-transform">
               <Film className="h-5 w-5" />
             </div>
             <div className="flex items-center">
-              <span className="text-xl sm:text-2xl font-black tracking-tight text-white">
-                CINE<span className="text-[#e50914]">JOY</span>
-              </span>
-              <span className="ml-1 text-[9px] font-black uppercase tracking-widest text-[#e50914] bg-red-950/40 border border-red-800/40 px-1 py-0.5 rounded">
-                PK
+              <span className="text-xl sm:text-2xl font-black tracking-tight text-white lowercase">
+                watch<span className="text-[#e50914]">lyn</span>
               </span>
             </div>
           </button>

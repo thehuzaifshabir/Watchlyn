@@ -3,6 +3,7 @@ import {
   UserProfile,
   PRESET_AVATARS,
   AUTH_STORAGE_KEYS,
+  LEGACY_AUTH_STORAGE_KEYS,
   hashPassword,
   sanitizeUsername,
   validateEmail,
@@ -53,7 +54,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 function loadRegisteredUsers(): UserProfile[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEYS.USERS_REGISTRY);
+    const raw = localStorage.getItem(AUTH_STORAGE_KEYS.USERS_REGISTRY) || localStorage.getItem(LEGACY_AUTH_STORAGE_KEYS.USERS_REGISTRY);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -72,10 +73,10 @@ function saveRegisteredUsers(users: UserProfile[]) {
 function loadSession(): { userId: string; rememberMe: boolean } | null {
   if (typeof window === 'undefined') return null;
   try {
-    const local = localStorage.getItem(AUTH_STORAGE_KEYS.ACTIVE_SESSION);
+    const local = localStorage.getItem(AUTH_STORAGE_KEYS.ACTIVE_SESSION) || localStorage.getItem(LEGACY_AUTH_STORAGE_KEYS.ACTIVE_SESSION);
     if (local) return JSON.parse(local);
 
-    const session = sessionStorage.getItem(AUTH_STORAGE_KEYS.ACTIVE_SESSION);
+    const session = sessionStorage.getItem(AUTH_STORAGE_KEYS.ACTIVE_SESSION) || sessionStorage.getItem(LEGACY_AUTH_STORAGE_KEYS.ACTIVE_SESSION);
     if (session) return JSON.parse(session);
 
     return null;

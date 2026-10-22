@@ -34,6 +34,12 @@ export const PRESET_AVATARS: PresetAvatar[] = [
 ];
 
 export const AUTH_STORAGE_KEYS = {
+  USERS_REGISTRY: 'watchlyn_registered_users',
+  ACTIVE_SESSION: 'watchlyn_active_session',
+  USER_DATA_PREFIX: 'watchlyn_userdata_',
+};
+
+export const LEGACY_AUTH_STORAGE_KEYS = {
   USERS_REGISTRY: 'cinejoy_registered_users',
   ACTIVE_SESSION: 'cinejoy_active_session',
   USER_DATA_PREFIX: 'cinejoy_userdata_',

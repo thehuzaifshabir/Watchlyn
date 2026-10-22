@@ -1,5 +1,5 @@
 /**
- * Pure formatting utilities for media metadata and Cinejoy display rules.
+ * Pure formatting utilities for media metadata and Watchlyn display rules.
  */
 
 export function formatRuntime(minutes?: number | null): string {
