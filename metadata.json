@@ -1,0 +1,6 @@
+{
+  "name": "Cinejoy",
+  "description": "Mobile-first streaming web application cloning Cinejoy with live TMDB discovery, multi-server streaming player, custom lists, and watch history.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
